@@ -1,5 +1,5 @@
 # Independent cloud PDF checker. Does not import the website parser or candidate rows.
-import json,re,pathlib,unicodedata,datetime,collections,hashlib,uuid,argparse,urllib.request,urllib.parse,tempfile,sys
+import json,re,pathlib,unicodedata,datetime,collections,hashlib,uuid,argparse,urllib.request,urllib.parse,urllib.error,tempfile,sys
 from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 import pdfplumber
@@ -161,12 +161,16 @@ def main():
    import getpass
    token=getpass.getpass('Sites service access (hidden): ')
   else:token=json.load(sys.stdin)['serviceToken']
-  req=urllib.request.Request(args.site.rstrip('/')+'/api/cloud-audit',data=json.dumps(report).encode(),headers={'Content-Type':'application/json','OAI-Sites-Authorization':'Bearer '+token,'X-Attica-Update-Token':token})
+  headers={'Content-Type':'application/json','User-Agent':'AtticaDutyIndependentAudit/1.0','X-Attica-Update-Token':token}
+  if urllib.parse.urlparse(args.site).hostname.endswith('.chatgpt.site'):headers['OAI-Sites-Authorization']='Bearer '+token
+  req=urllib.request.Request(args.site.rstrip('/')+'/api/cloud-audit',data=json.dumps(report).encode(),headers=headers)
   try:
    class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self,*args,**kwargs):return None
    with urllib.request.build_opener(NoRedirect).open(req,timeout=35)as response:result=json.load(response)
    print(json.dumps(result,ensure_ascii=False))
    if not result.get('passed'):sys.exit(1)
+  except urllib.error.HTTPError as exc:
+   print(json.dumps({'submitted':False,'error':'HTTPError','status':exc.code,'response':exc.read(1200).decode(errors='replace').replace(token,'[redacted]')}));sys.exit(1)
   except Exception as exc:print(json.dumps({'submitted':False,'error':type(exc).__name__}));sys.exit(1)
 if __name__=='__main__':main()
