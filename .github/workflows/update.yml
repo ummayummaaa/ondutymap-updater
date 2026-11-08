@@ -1,0 +1,37 @@
+name: Update and independently verify OnDutyMap
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */3 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: ondutymap-update
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install independent PDF parser
+        run: python -m pip install --disable-pip-version-check pdfplumber==0.11.9
+      - name: Import official schedules and verify stored PDF hashes
+        env:
+          UPDATER_TOKEN: ${{ secrets.UPDATER_TOKEN }}
+        run: |
+          node -e 'if (!process.env.UPDATER_TOKEN) process.exit(1); process.stdout.write(JSON.stringify({site:"https://ondutymap.ioanniskotidism.workers.dev",updaterToken:process.env.UPDATER_TOKEN}))' | node updater.mjs
+      - name: Independently compare originals and save public audit status
+        if: ${{ !cancelled() }}
+        env:
+          UPDATER_TOKEN: ${{ secrets.UPDATER_TOKEN }}
+        run: |
+          node -e 'if (!process.env.UPDATER_TOKEN) process.exit(1); process.stdout.write(JSON.stringify({serviceToken:process.env.UPDATER_TOKEN}))' | python cloud-check.py --site https://ondutymap.ioanniskotidism.workers.dev --output /tmp/ondutymap-audit.json --submit
