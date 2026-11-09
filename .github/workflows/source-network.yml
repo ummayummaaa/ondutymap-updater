@@ -1,0 +1,43 @@
+name: Diagnose Ministry source connectivity
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: DNS and direct HTTP diagnostics (no site credentials)
+        run: |
+          python3 -u - <<'PY'
+          import socket, urllib.request, urllib.error, time, ssl, concurrent.futures, subprocess, json
+          host='www.moh.gov.gr'
+          url='https://'+host+'/articles/citizen/efhmeries-nosokomeiwn/68-efhmeries-nosokomeiwn-attikhs'
+          print('DNS',socket.getaddrinfo(host,443,type=socket.SOCK_STREAM),flush=True)
+          def check(label, command):
+              t=time.monotonic()
+              try:
+                  r=subprocess.run(command,capture_output=True,text=True,timeout=35)
+                  return {'test':label,'seconds':round(time.monotonic()-t,2),'exit':r.returncode,'stdout':r.stdout[:1800],'stderr':r.stderr[:1800]}
+              except Exception as e:return {'test':label,'error':repr(e)}
+          jobs=[]
+          for family in ['-4','-6']:
+              jobs.append(('curl '+family,['curl',family,'-sS','-I','--connect-timeout','10','--max-time','20','-w','HTTP=%{http_code} IP=%{remote_ip} TLS=%{ssl_verify_result}\n','-A','AtticaDutyIndependentAudit/1.0',url]))
+          jobs.append(('openssl TLS',['bash','-c','timeout 20 openssl s_client -connect www.moh.gov.gr:443 -servername www.moh.gov.gr -brief </dev/null']))
+          with concurrent.futures.ThreadPoolExecutor() as pool:
+              for result in pool.map(lambda j:check(*j),jobs):print(json.dumps(result),flush=True)
+          t=time.monotonic()
+          try:
+              request=urllib.request.Request(url,headers={'User-Agent':'AtticaDutyIndependentAudit/1.0','Cache-Control':'no-cache'})
+              with urllib.request.urlopen(request,timeout=20) as r:print('PYTHON',r.status,'bytes',len(r.read()),flush=True)
+          except Exception as e:print('PYTHON_ERROR',type(e).__name__,repr(e),'reason',repr(getattr(e,'reason',None)),'seconds',round(time.monotonic()-t,2),flush=True)
+          PY
+      - name: Node error including network cause
+        run: |
+          node --input-type=module <<'JS'
+          const url='https://www.moh.gov.gr/articles/citizen/efhmeries-nosokomeiwn/68-efhmeries-nosokomeiwn-attikhs';
+          try { const r=await fetch(url,{headers:{'User-Agent':'OnDutyMapUpdater/1.0','Cache-Control':'no-cache'},signal:AbortSignal.timeout(20000),redirect:'error'});console.log({status:r.status,bytes:(await r.arrayBuffer()).byteLength}); }
+          catch(e){console.log({name:e.name,message:e.message,cause:requireCause(e.cause)});}
+          function requireCause(e){return e?{name:e.name,message:e.message,code:e.code,address:e.address,port:e.port,errors:e.errors?.map(requireCause)}:null;}
+          JS
