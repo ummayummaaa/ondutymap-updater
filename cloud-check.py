@@ -3,6 +3,7 @@ import json,re,pathlib,unicodedata,datetime,collections,hashlib,uuid,argparse,ur
 from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 import pdfplumber
+import http.client,socket,ssl
 def norm(s):return ''.join(x for x in unicodedata.normalize('NFD',s).upper()if x.isalnum() and not unicodedata.combining(x))
 def canonical(s):
  d={'Αγγειοχειρ/κή':'Αγγειοχειρουργική','Αγγειοχειρ/γική':'Αγγειοχειρουργική','Γαστρεντερ/γική':'Γαστρεντερολογική','Θωρακοχειρ/γική':'Θωρακοχειρουργική','Θωρακοχειρ/κή':'Θωρακοχειρουργική','Καρδιοχειρ/κή':'Καρδιοχειρουργική','Παιδιατρικό':'Παιδιατρική','Παιδοψυχιατρικό':'Παιδοψυχιατρική','Ορθοπαιδική':'Ορθοπεδική','Κλινική Χεριού- Μικροχειρουργική Άνω Άκρου':'Κλινική Χεριού-Μικροχειρουργική Άνω Άκρου'}
@@ -103,10 +104,36 @@ class Links(HTMLParser):
 
 def fetch_bytes(url):
  req=urllib.request.Request(url,headers={'User-Agent':'AtticaDutyIndependentAudit/1.0','Cache-Control':'no-cache'})
- with urllib.request.urlopen(req,timeout=35)as r:
+ official=urllib.parse.urlparse(url).netloc=='www.moh.gov.gr'
+ try:
+  with urllib.request.urlopen(req,timeout=10 if official else 35)as r:
+   data=r.read(6000001)
+   if len(data)>6000000:raise ValueError('Source exceeds size limit')
+   return data
+ except Exception as exc:
+  if not official:raise
+  print('Ministry primary route failed; trying verified CDN route: '+type(exc).__name__+' '+str(exc)[:160],file=sys.stderr)
+  return ministry_fallback(url)
+
+class MinistryConnection(http.client.HTTPSConnection):
+ def connect(self):
+  if self.host!='www.moh.gov.gr':raise ValueError('Unexpected source hostname')
+  raw=socket.create_connection(('31.22.118.30',443),self.timeout)
+  try:self.sock=self._context.wrap_socket(raw,server_hostname=self.host)
+  except Exception:raw.close();raise
+
+def ministry_fallback(url):
+ target=urllib.parse.urlparse(url)
+ if target.scheme!='https' or target.netloc!='www.moh.gov.gr' or target.username or target.password:raise ValueError('Unexpected source origin')
+ connection=MinistryConnection('www.moh.gov.gr',timeout=35,context=ssl.create_default_context())
+ try:
+  connection.request('GET',urllib.parse.urlunparse(('','',target.path or '/',target.params,target.query,'')),headers={'User-Agent':'AtticaDutyIndependentAudit/1.0','Cache-Control':'no-cache'})
+  r=connection.getresponse()
+  if r.status!=200:raise ValueError('Ministry fallback HTTP '+str(r.status))
   data=r.read(6000001)
   if len(data)>6000000:raise ValueError('Source exceeds size limit')
   return data
+ finally:connection.close()
 
 def collect(site):
  site=site.rstrip('/');origin=urllib.parse.urlparse(site)
@@ -116,7 +143,7 @@ def collect(site):
  report={'runId':str(uuid.uuid4()),'method':'independent-pdfplumber-v1','days':[],'issues':[]}
  links=Links()
  try:links.feed(fetch_bytes(SOURCE).decode('utf-8'))
- except Exception:report['issues'].append('Official publication index unavailable');return report
+ except Exception as exc:report['issues'].append('Official publication index unavailable: '+type(exc).__name__+' '+str(exc)[:160]);return report
  with tempfile.TemporaryDirectory(prefix='attica-independent-')as work:
   for date in dates:
    try:
