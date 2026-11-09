@@ -22,6 +22,8 @@ jobs:
                   return {'test':label,'seconds':round(time.monotonic()-t,2),'exit':r.returncode,'stdout':r.stdout[:1800],'stderr':r.stderr[:1800]}
               except Exception as e:return {'test':label,'error':repr(e)}
           jobs=[]
+          for ip in ['31.22.118.30','109.169.44.140']:
+              jobs.append(('GET pinned '+ip,['curl','-sS','--resolve',host+':443:'+ip,'--connect-timeout','10','--max-time','20','-o','/dev/null','-w','HTTP=%{http_code} IP=%{remote_ip} seconds=%{time_total}\n','-A','AtticaDutyIndependentAudit/1.0',url]))
           for family in ['-4','-6']:
               jobs.append(('curl '+family,['curl',family,'-sS','-I','--connect-timeout','10','--max-time','20','-w','HTTP=%{http_code} IP=%{remote_ip} TLS=%{ssl_verify_result}\n','-A','AtticaDutyIndependentAudit/1.0',url]))
           jobs.append(('openssl TLS',['bash','-c','timeout 20 openssl s_client -connect www.moh.gov.gr:443 -servername www.moh.gov.gr -brief </dev/null']))
