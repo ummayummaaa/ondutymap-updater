@@ -1,0 +1,41 @@
+name: Verify independent audit with blocked Ministry network
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check pdfplumber==0.11.9
+      - name: Read original PDFs independently with direct Ministry access disabled
+        run: |
+          python -u - <<'PY'
+          import pathlib,urllib.request,urllib.parse,importlib.util,json
+          site='https://attica-duty-hospitals.ioanniskotidism.chatgpt.site'
+          source=urllib.request.urlopen(site+'/api/cloud-audit-kit',timeout=30).read()
+          path=pathlib.Path('/tmp/published-checker.py');path.write_bytes(source)
+          spec=importlib.util.spec_from_file_location('checker',path);checker=importlib.util.module_from_spec(spec);spec.loader.exec_module(checker)
+          original=checker.urllib.request.urlopen;attempts=[]
+          def restricted(request,*args,**kwargs):
+              url=request.full_url if hasattr(request,'full_url')else request
+              if urllib.parse.urlparse(url).hostname=='www.moh.gov.gr':
+                  attempts.append('direct');raise OSError(101,'Network is unreachable (deliberate verification)')
+              return original(request,*args,**kwargs)
+          def no_direct_ip(url):
+              attempts.append('direct-ip');raise OSError(101,'Network is unreachable (deliberate verification)')
+          checker.urllib.request.urlopen=restricted;checker.ministry_fallback=no_direct_ip
+          report=checker.collect(site)
+          print(json.dumps({'runId':report['runId'],'days':[{'date':d['date'],'entries':len(d['entries'])}for d in report['days']],'issues':report['issues'],'sourceCheckedAt':report.get('sourceCheckedAt'),'blockedNetworkAttempts':attempts}))
+          if report['issues']or len(report['days'])<2 or attempts:raise SystemExit('Blocked-network independent extraction failed')
+          output=pathlib.Path('/tmp/restricted-audit');output.mkdir();(output/'report.json').write_text(json.dumps(report,ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: restricted-network-audit
+          path: /tmp/restricted-audit/report.json
+          retention-days: 1
