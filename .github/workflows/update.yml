@@ -2,7 +2,7 @@ name: Update and independently verify OnDutyMap
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 */3 * * *'
+    - cron: '17 * * * *'
 permissions:
   contents: read
 concurrency:
@@ -10,6 +10,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   refresh:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -34,4 +36,8 @@ jobs:
         env:
           UPDATER_TOKEN: ${{ secrets.UPDATER_TOKEN }}
         run: |
-          node -e 'if (!process.env.UPDATER_TOKEN) process.exit(1); process.stdout.write(JSON.stringify({serviceToken:process.env.UPDATER_TOKEN}))' | python cloud-check.py --site https://ondutymap.ioanniskotidism.workers.dev --output /tmp/ondutymap-audit.json --submit
+          node -e 'if (!process.env.UPDATER_TOKEN) process.exit(1); process.stdout.write(JSON.stringify({serviceToken:process.env.UPDATER_TOKEN}))' | python cloud-check.py --site https://ondutymap.ioanniskotidism.workers.dev --output /tmp/ondutymap-audit.json --manifest-output /tmp/ondutymap-source-manifest.json --submit
+      - name: Publish fresh original PDF references for the independent Telegram task
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python publish-source-manifest.py /tmp/ondutymap-source-manifest.json
