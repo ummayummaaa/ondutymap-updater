@@ -17,7 +17,7 @@ jobs:
           python -u - <<'PY'
           import pathlib,urllib.request,urllib.parse,importlib.util,json
           site='https://attica-duty-hospitals.ioanniskotidism.chatgpt.site'
-          source=urllib.request.urlopen(site+'/api/cloud-audit-kit',timeout=30).read()
+          source=urllib.request.urlopen(urllib.request.Request(site+'/api/cloud-audit-kit',headers={'User-Agent':'AtticaDutyIndependentAudit/1.0'}),timeout=30).read()
           path=pathlib.Path('/tmp/published-checker.py');path.write_bytes(source)
           spec=importlib.util.spec_from_file_location('checker',path);checker=importlib.util.module_from_spec(spec);spec.loader.exec_module(checker)
           original=checker.urllib.request.urlopen;attempts=[]
