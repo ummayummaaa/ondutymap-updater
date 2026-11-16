@@ -3,18 +3,29 @@ import json,re,pathlib,unicodedata,datetime,collections,hashlib,uuid,argparse,ur
 from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 import pdfplumber
-import http.client,socket,ssl,html
+import http.client,socket,ssl,html,base64
 
 MIRROR_MANIFEST='https://raw.githubusercontent.com/ummayummaaa/ondutymap-updater/source-mirror/source-manifest.json'
 MIRROR_ORIGIN='https://ondutymap.ioanniskotidism.workers.dev'
 SOURCE_MIRROR_ALLOWED=False
 SOURCE_OBSERVED_AT=None
+SOURCE_MANIFEST_CACHE=None
+MIRROR_API='https://api.github.com/repos/ummayummaaa/ondutymap-updater/contents/source-manifest.json?ref=source-mirror'
 class SourceReviewRequired(ValueError):pass
 def mirror_source_bytes(url):
- global SOURCE_OBSERVED_AT
+ global SOURCE_OBSERVED_AT,SOURCE_MANIFEST_CACHE
  target=urllib.parse.urlparse(url)
  if target.scheme!='https' or target.netloc!='www.moh.gov.gr':raise ValueError('Unexpected mirror source')
- manifest=json.loads(fetch_bytes(MIRROR_MANIFEST))
+ manifest=SOURCE_MANIFEST_CACHE
+ if manifest is None:
+  try:manifest=json.loads(fetch_bytes(MIRROR_MANIFEST))
+  except Exception:manifest={}
+  try:age=(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(manifest['checkedAt'].replace('Z','+00:00'))).total_seconds()
+  except Exception:age=10800
+  if not -60<=age<10800:
+   envelope=json.loads(fetch_bytes(MIRROR_API))
+   if envelope.get('encoding')!='base64' or not isinstance(envelope.get('content'),str) or len(envelope['content'])>50000:raise ValueError('Invalid manifest response')
+   manifest=json.loads(base64.b64decode(envelope['content']))
  observed=datetime.datetime.fromisoformat(manifest['checkedAt'].replace('Z','+00:00'))
  age=(datetime.datetime.now(datetime.timezone.utc)-observed).total_seconds()
  if manifest.get('passed')is not True or manifest.get('method')!='independent-pdfplumber-v1' or not -60<=age<10800 or not isinstance(manifest.get('days'),list) or not 2<=len(manifest['days'])<=3:raise ValueError('Source mirror is unverified or stale')
@@ -34,6 +45,7 @@ def mirror_source_bytes(url):
   if not day:raise ValueError('PDF absent from verified source mirror')
   data=fetch_bytes(MIRROR_ORIGIN+'/api/pdf?date='+day['date']+'&hash='+day['sourceHash'])
   if not data.startswith(b'%PDF-') or hashlib.sha256(data).hexdigest()!=day['sourceHash']:raise ValueError('Mirrored PDF hash mismatch')
+ SOURCE_MANIFEST_CACHE=manifest
  if SOURCE_OBSERVED_AT is None or observed<SOURCE_OBSERVED_AT:SOURCE_OBSERVED_AT=observed
  return data
 def norm(s):return ''.join(x for x in unicodedata.normalize('NFD',s).upper()if x.isalnum() and not unicodedata.combining(x))
@@ -173,10 +185,10 @@ def ministry_fallback(url):
  finally:connection.close()
 
 def collect(site):
- global SOURCE_MIRROR_ALLOWED,SOURCE_OBSERVED_AT
+ global SOURCE_MIRROR_ALLOWED,SOURCE_OBSERVED_AT,SOURCE_MANIFEST_CACHE
  site=site.rstrip('/');origin=urllib.parse.urlparse(site)
  if origin.scheme!='https' or origin.hostname not in {'attica-duty-hospitals.ioanniskotidism.chatgpt.site','ondutymap.gr','www.ondutymap.gr','ondutymap.ioanniskotidism.workers.dev'} or origin.port or origin.username or origin.password or origin.path or origin.query or origin.fragment:raise ValueError('Unexpected Site origin')
- SOURCE_MIRROR_ALLOWED=origin.hostname=='attica-duty-hospitals.ioanniskotidism.chatgpt.site';SOURCE_OBSERVED_AT=None
+ SOURCE_MIRROR_ALLOWED=origin.hostname=='attica-duty-hospitals.ioanniskotidism.chatgpt.site';SOURCE_OBSERVED_AT=None;SOURCE_MANIFEST_CACHE=None
  config=json.loads(fetch_bytes(site+'/api/config'));directory=config['directory']
  today=datetime.datetime.now(ZoneInfo('Europe/Athens')).date();dates=[(today+datetime.timedelta(days=n)).isoformat()for n in [-1,0,1]]
  report={'runId':str(uuid.uuid4()),'method':'independent-pdfplumber-v1','days':[],'issues':[],'sources':[]}

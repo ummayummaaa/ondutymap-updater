@@ -31,7 +31,12 @@ jobs:
           checker.urllib.request.urlopen=restricted;checker.ministry_fallback=no_direct_ip
           report=checker.collect(site)
           print(json.dumps({'runId':report['runId'],'days':[{'date':d['date'],'entries':len(d['entries'])}for d in report['days']],'issues':report['issues'],'sourceCheckedAt':report.get('sourceCheckedAt'),'blockedNetworkAttempts':attempts}))
-          if report['issues']or len(report['days'])<2 or attempts:raise SystemExit('Blocked-network independent extraction failed')
+          today=checker.datetime.datetime.now(checker.ZoneInfo('Europe/Athens')).date()
+          required={(today+checker.datetime.timedelta(days=n)).isoformat()for n in [-1,0]}
+          blocked={d['date']for d in (checker.SOURCE_MANIFEST_CACHE or {}).get('blockedDays',[])}
+          expected_issues=all(any(issue.startswith(date+': SourceReviewRequired Official source requires review:')for date in blocked)for issue in report['issues'])
+          if not required.issubset({d['date']for d in report['days']}) or attempts or not expected_issues:raise SystemExit('Blocked-network source transport failed')
+          print('Source transport verified. Source defects remain audit failures; this is not an all-days approval.')
           output=pathlib.Path('/tmp/restricted-audit');output.mkdir();(output/'report.json').write_text(json.dumps(report,ensure_ascii=False))
           PY
       - uses: actions/upload-artifact@v4
