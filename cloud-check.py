@@ -72,9 +72,14 @@ def facilities(cell):
   for a,b in selected:hits.append((offset[a],offset[b-1]+1,h))
  return sorted(hits,key=lambda x:x[0])
 
+def approved_source_omission(source_hash,date,page,specialty,column,times,cell):
+ # Explicit user decision on 2026-11-16; preserve the original document and all other checks.
+ return source_hash=='b1f3a687c6e1fcdd8f20de539ac95ca7d73c7ee4b209ad26637582954f75aac9' and date=='2026-11-17' and page==4 and specialty=='Μαιευτική' and column==0 and times[:2]==('08:00','14:30') and cell.strip()=='2'
+
 def extract_pdf(path,date,directory):
  global dir
  dir=directory
+ source_hash=hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
  entries=[];allrows=[];layout=None;lastspec=None
  with pdfplumber.open(path)as pdf:
   for pn,page in enumerate(pdf.pages,1):
@@ -112,6 +117,7 @@ def extract_pdf(path,date,directory):
     lastspec=spec;spec=canonical(spec)
     for col,cell in enumerate(row[1:-1]):
      cell=cell or''
+     if approved_source_omission(source_hash,date,pn,spec,col,times[col]if col<len(times)and times[col]else (),cell):continue
      if re.fullmatch(r'\s*\d+\s*',cell):raise SourceReviewRequired('Unresolved numeric hospital cell on page '+str(pn)+': '+cell.strip())
      if not cell.strip() or col>=len(times)or not times[col]:continue
      start,end,nextday=times[col];hits=facilities(cell)
