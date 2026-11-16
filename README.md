@@ -9,3 +9,9 @@ Public execution kit for https://ondutymap.ioanniskotidism.workers.dev.
 GitHub Actions runs on standard Ubuntu every three hours and supports manual dispatch. UPDATER_TOKEN is stored only as an encrypted Actions secret. No caches or artifact uploads are used. Telegram notifications are not configured on this Cloudflare copy.
 
 For manual execution, provide the updater credential through stdin JSON only. Never commit or print credentials. The Worker accepts only the hash of this credential. PDFs and hospital schedule data remain on Cloudflare D1.
+
+### Automatic recovery (16 November 2026)
+
+The existing workflow runs every twenty minutes and retries the original updater at most three times. It keeps a failing status when any published source cannot be processed. A fresh source manifest may still contain independently matched required dates, with the unresolved future original explicitly in `blockedDays`; this is not an all-days approval. Both Sites transports preserve the blocked date instead of treating it as unpublished. Expiry and exact comparison remain strict.
+
+The November 17 original contains an unresolved numeric obstetrics cell. Both parsers must reject it; the fixture and tests prevent silent omission. Run `python -m unittest discover -s tests`.

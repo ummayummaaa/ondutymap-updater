@@ -9,6 +9,7 @@ MIRROR_MANIFEST='https://raw.githubusercontent.com/ummayummaaa/ondutymap-updater
 MIRROR_ORIGIN='https://ondutymap.ioanniskotidism.workers.dev'
 SOURCE_MIRROR_ALLOWED=False
 SOURCE_OBSERVED_AT=None
+class SourceReviewRequired(ValueError):pass
 def mirror_source_bytes(url):
  global SOURCE_OBSERVED_AT
  target=urllib.parse.urlparse(url)
@@ -17,13 +18,18 @@ def mirror_source_bytes(url):
  observed=datetime.datetime.fromisoformat(manifest['checkedAt'].replace('Z','+00:00'))
  age=(datetime.datetime.now(datetime.timezone.utc)-observed).total_seconds()
  if manifest.get('passed')is not True or manifest.get('method')!='independent-pdfplumber-v1' or not -60<=age<10800 or not isinstance(manifest.get('days'),list) or not 2<=len(manifest['days'])<=3:raise ValueError('Source mirror is unverified or stale')
- for day in manifest['days']:
+ blocked=manifest.get('blockedDays',[])
+ if not isinstance(blocked,list) or len(blocked)>1:raise ValueError('Invalid blocked source list')
+ all_days=manifest['days']+blocked
+ if len({d['date']for d in all_days})!=len(all_days):raise ValueError('Duplicate source date')
+ for day in all_days:
   source=urllib.parse.urlparse(day['sourceUrl'])
   if source.scheme!='https' or source.netloc!='www.moh.gov.gr' or not re.fullmatch(r'20\d\d-\d\d-\d\d',day['date']) or not re.fullmatch(r'[a-f0-9]{64}',day['sourceHash']) or not urllib.parse.parse_qs(source.query).get('fdl',[''])[0].isdigit() or not isinstance(day.get('sourceLabel'),str):raise ValueError('Invalid mirrored source')
  if not urllib.parse.parse_qs(target.query).get('fdl'):
   if url!=SOURCE:raise ValueError('Unexpected mirrored index')
-  data='\n'.join('<a href="'+html.escape(d['sourceUrl'],quote=True)+'">'+html.escape(d['sourceLabel'])+'</a>'for d in manifest['days']).encode()
+  data='\n'.join('<a href="'+html.escape(d['sourceUrl'],quote=True)+'">'+html.escape(d['sourceLabel'])+'</a>'for d in all_days).encode()
  else:
+  if any(d['sourceUrl']==url for d in blocked):raise SourceReviewRequired('Official source requires review: '+next(d['date']for d in blocked if d['sourceUrl']==url))
   day=next((d for d in manifest['days']if d['sourceUrl']==url),None)
   if not day:raise ValueError('PDF absent from verified source mirror')
   data=fetch_bytes(MIRROR_ORIGIN+'/api/pdf?date='+day['date']+'&hash='+day['sourceHash'])
@@ -94,6 +100,7 @@ def extract_pdf(path,date,directory):
     lastspec=spec;spec=canonical(spec)
     for col,cell in enumerate(row[1:-1]):
      cell=cell or''
+     if re.fullmatch(r'\s*\d+\s*',cell):raise SourceReviewRequired('Unresolved numeric hospital cell on page '+str(pn)+': '+cell.strip())
      if not cell.strip() or col>=len(times)or not times[col]:continue
      start,end,nextday=times[col];hits=facilities(cell)
      for n,(a,b,h)in enumerate(hits):
@@ -133,6 +140,7 @@ def fetch_bytes(url):
  official=urllib.parse.urlparse(url).netloc=='www.moh.gov.gr'
  if official and SOURCE_MIRROR_ALLOWED:
   try:return mirror_source_bytes(url)
+  except SourceReviewRequired:raise
   except Exception as exc:print('Verified HTTPS source mirror unavailable: '+type(exc).__name__+' '+str(exc)[:160],file=sys.stderr)
  try:
   with urllib.request.urlopen(req,timeout=10 if official else 35)as r:
@@ -171,7 +179,7 @@ def collect(site):
  SOURCE_MIRROR_ALLOWED=origin.hostname=='attica-duty-hospitals.ioanniskotidism.chatgpt.site';SOURCE_OBSERVED_AT=None
  config=json.loads(fetch_bytes(site+'/api/config'));directory=config['directory']
  today=datetime.datetime.now(ZoneInfo('Europe/Athens')).date();dates=[(today+datetime.timedelta(days=n)).isoformat()for n in [-1,0,1]]
- report={'runId':str(uuid.uuid4()),'method':'independent-pdfplumber-v1','days':[],'issues':[]}
+ report={'runId':str(uuid.uuid4()),'method':'independent-pdfplumber-v1','days':[],'issues':[],'sources':[]}
  links=Links()
  try:links.feed(fetch_bytes(SOURCE).decode('utf-8'))
  except Exception as exc:report['issues'].append('Official publication index unavailable: '+type(exc).__name__+' '+str(exc)[:160]);return report
@@ -191,6 +199,8 @@ def collect(site):
      continue
     url=max(candidates)[2];data=fetch_bytes(url)
     if not data.startswith(b'%PDF-'):raise ValueError('Not a PDF')
+    label=next(label for href,label in links.links if urllib.parse.urljoin(SOURCE,href)==url)
+    report['sources'].append({'date':date,'sourceHash':hashlib.sha256(data).hexdigest(),'sourceUrl':url,'sourceLabel':label})
     path=pathlib.Path(work)/(date+'.pdf');path.write_bytes(data)
     with pdfplumber.open(path)as pdf:
      if not 1<=len(pdf.pages)<=12:raise ValueError('Unsupported page count')
@@ -212,6 +222,22 @@ def collect(site):
  report['sourceCheckedAt']=(SOURCE_OBSERVED_AT.isoformat()if SOURCE_OBSERVED_AT else source_checked_at)
  return report
 
+def verified_manifest(report,result):
+ if SOURCE_MIRROR_ALLOWED:raise ValueError('A mirrored run cannot republish source evidence')
+ today=datetime.datetime.now(ZoneInfo('Europe/Athens')).date()
+ required={(today+datetime.timedelta(days=n)).isoformat()for n in [-1,0]}
+ tomorrow=(today+datetime.timedelta(days=1)).isoformat()
+ # A future source defect must not expire independently verified current days.
+ # It remains explicitly published as blocked; the overall audit still fails.
+ matched={d['date']for d in result.get('days',[])if not d.get('issues') and d.get('entries',0)>0}
+ days=[{k:d[k]for k in ['date','sourceHash','sourceUrl','sourceLabel']}for d in report['days']if d['date']in matched]
+ if not required.issubset({d['date']for d in days}):raise ValueError('Required dates did not pass independent comparison')
+ if any(not issue.startswith(tomorrow+':')for issue in report['issues']):raise ValueError('Unscoped source failure prevents manifest publication')
+ blocked=[d for d in report.get('sources',[])if d['date']not in matched]
+ if any(d['date']!=tomorrow for d in blocked):raise ValueError('Required source is blocked')
+ if report['issues'] and not blocked:raise ValueError('Future source failure has no explicit blocked reference')
+ return {'method':report['method'],'passed':True,'scope':'verified-days-only','checkedAt':report['sourceCheckedAt'],'runId':report['runId'],'days':days,'blockedDays':blocked}
+
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--site',default='https://attica-duty-hospitals.ioanniskotidism.chatgpt.site');parser.add_argument('--output',default='cloud-audit-report.json');parser.add_argument('--manifest-output');parser.add_argument('--submit',action='store_true');args=parser.parse_args()
  report=collect(args.site);pathlib.Path(args.output).write_text(json.dumps(report,ensure_ascii=False))
@@ -230,11 +256,12 @@ def main():
     def redirect_request(self,*args,**kwargs):return None
    with urllib.request.build_opener(NoRedirect).open(req,timeout=35)as response:result=json.load(response)
    print(json.dumps(result,ensure_ascii=False))
-   if not result.get('passed'):sys.exit(1)
    if args.manifest_output:
-    if SOURCE_MIRROR_ALLOWED:raise ValueError('A mirrored run cannot republish source evidence')
-    manifest={'method':report['method'],'passed':True,'checkedAt':report['sourceCheckedAt'],'runId':report['runId'],'days':[{k:d[k]for k in ['date','sourceHash','sourceUrl','sourceLabel']}for d in report['days']]}
-    pathlib.Path(args.manifest_output).write_text(json.dumps(manifest,ensure_ascii=False))
+    try:
+     manifest=verified_manifest(report,result)
+     pathlib.Path(args.manifest_output).write_text(json.dumps(manifest,ensure_ascii=False))
+    except ValueError as exc:print('Manifest withheld: '+str(exc),file=sys.stderr)
+   if not result.get('passed'):sys.exit(1)
   except urllib.error.HTTPError as exc:
    print(json.dumps({'submitted':False,'error':'HTTPError','status':exc.code,'response':exc.read(1200).decode(errors='replace').replace(token,'[redacted]')}));sys.exit(1)
   except Exception as exc:print(json.dumps({'submitted':False,'error':type(exc).__name__}));sys.exit(1)
